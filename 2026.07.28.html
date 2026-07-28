@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>3D Acupoint AR Tracking System</title>
+  
+  <!-- 載入 MediaPipe 官方 JS 庫 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #121212;
+      color: #ffffff;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    h3 {
+      margin: 10px 0;
+      font-size: 1.1rem;
+      color: #00ffcc;
+    }
+
+    .canvas-container {
+      position: relative;
+      width: 95vw;
+      max-width: 640px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+
+    video { display: none; }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <h3>3D Acupoint AR System (Web)</h3>
+
+  <div class="canvas-container">
+    <video id="input_video" playsinline></video>
+    <canvas id="output_canvas" width="640" height="480"></canvas>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    // 自適應平滑歷史紀錄
+    const smoothDict = {};
+
+    function adaptiveSmoothPoint(name, x, y, alphaMin = 0.1, alphaMax = 0.9, k = 0.05) {
+      if (!smoothDict[name]) {
+        smoothDict[name] = { x, y };
+        return { x, y };
+      }
+      const ox = smoothDict[name].x;
+      const oy = smoothDict[name].y;
+      const d = Math.sqrt((x - ox) ** 2 + (y - oy) ** 2);
+      const dynamicAlpha = alphaMin + (alphaMax - alphaMin) * Math.exp(-k * d);
+      
+      const nx = Math.round(dynamicAlpha * ox + (1 - dynamicAlpha) * x);
+      const ny = Math.round(dynamicAlpha * oy + (1 - dynamicAlpha) * y);
+
+      smoothDict[name] = { x: nx, y: ny };
+      return { x: nx, y: ny };
+    }
+
+    function onResults(results) {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      // 水平鏡像翻轉繪製畫面
+      canvasCtx.translate(canvasElement.width, 0);
+      canvasCtx.scale(-1, 1);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.multiFaceLandmarks) {
+        for (const landmarks of results.multiFaceLandmarks) {
+          // 1. 繪製灰色 3D 細微網格
+          drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {color: '#C0C0C070', lineWidth: 1});
+          
+          // 2. 繪製綠色五官輪廓
+          drawConnectors(canvasCtx, landmarks, FACEMESH_CONTOURS, {color: '#00FF00', lineWidth: 1.2});
+
+          const w = canvasElement.width;
+          const h = canvasElement.height;
+          const getPt = (idx) => ({
+            x: Math.round(landmarks[idx].x * w),
+            y: Math.round(landmarks[idx].y * h)
+          });
+
+          // 3. 剛性穴位幾何計算
+          const yintang = getPt(6);
+          const qingming_L = getPt(133), qingming_R = getPt(362);
+          const zanzhu_L = getPt(55), zanzhu_R = getPt(285);
+          const yuyao_L = getPt(105), yuyao_R = getPt(334);
+
+          const in_L = getPt(133), out_L = getPt(33);
+          const tongzi_L = {
+            x: Math.round(out_L.x + 0.35 * (out_L.x - in_L.x)),
+            y: Math.round(out_L.y + 0.35 * (out_L.y - in_L.y))
+          };
+
+          const in_R = getPt(362), out_R = getPt(263);
+          const tongzi_R = {
+            x: Math.round(out_R.x + 0.35 * (out_R.x - in_R.x)),
+            y: Math.round(out_R.y + 0.35 * (out_R.y - in_R.y))
+          };
+
+          const nose = getPt(1);
+          const cL_x = (in_L.x + out_L.x) / 2, cL_y = (in_L.y + out_L.y) / 2;
+          const sibai_L = {
+            x: Math.round(cL_x),
+            y: Math.round(cL_y + (nose.y - cL_y) * 0.45)
+          };
+
+          const cR_x = (in_R.x + out_R.x) / 2, cR_y = (in_R.y + out_R.y) / 2;
+          const sibai_R = {
+            x: Math.round(cR_x),
+            y: Math.round(cR_y + (nose.y - cR_y) * 0.45)
+          };
+
+          // 4. 繪製穴位標籤與紅點
+          const drawPoint = (name, label, pt) => {
+            const smoothed = adaptiveSmoothPoint(name, pt.x, pt.y);
+
+            // 畫紅點
+            canvasCtx.beginPath();
+            canvasCtx.arc(smoothed.x, smoothed.y, 4, 0, 2 * Math.PI);
+            canvasCtx.fillStyle = '#FF0000';
+            canvasCtx.fill();
+
+            // 繪製文字 (需反向鏡像以防文字變顛倒)
+            canvasCtx.save();
+            canvasCtx.translate(smoothed.x, smoothed.y);
+            canvasCtx.scale(-1, 1);
+            canvasCtx.fillStyle = '#FFFFFF';
+            canvasCtx.font = '10px Arial';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.fillText(label, 0, -6);
+            canvasCtx.restore();
+          };
+
+          drawPoint("yintang", "Yintang", yintang);
+          drawPoint("qL", "Qingming_L", qingming_L);
+          drawPoint("qR", "Qingming_R", qingming_R);
+          drawPoint("zL", "Zanzhu_L", zanzhu_L);
+          drawPoint("zR", "Zanzhu_R", zanzhu_R);
+          drawPoint("yL", "Yuyao_L", yuyao_L);
+          drawPoint("yR", "Yuyao_R", yuyao_R);
+          drawPoint("tL", "Tongziliao_L", tongzi_L);
+          drawPoint("tR", "Tongziliao_R", tongzi_R);
+          drawPoint("sL", "Sibai_L", sibai_L);
+          drawPoint("sR", "Sibai_R", sibai_R);
+        }
+      }
+      canvasCtx.restore();
+    }
+
+    // 初始化 FaceMesh
+    const faceMesh = new FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMesh.onResults(onResults);
+
+    // 啟動相機
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await faceMesh.send({ image: videoElement });
+      },
+      width: 640,
+      height: 480
+    });
+
+    camera.start();
+  </script>
+</body>
+</html>
